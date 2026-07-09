@@ -71,6 +71,13 @@ func ParseGQLMedia(ctx *models.ExtractorContext, data *Media) (*models.Media, er
 
 	switch data.Typename {
 	case "GraphVideo", "XDTGraphVideo":
+		if data.VideoURL == "" {
+			return nil, fmt.Errorf("video_url missing for GraphVideo/XDTGraphVideo post")
+		}
+		var width, height int32
+		if data.Dimensions != nil {
+			width, height = data.Dimensions.Width, data.Dimensions.Height
+		}
 		item := media.NewItem()
 		item.AddFormats(&models.MediaFormat{
 			FormatID:     "video",
@@ -79,10 +86,13 @@ func ParseGQLMedia(ctx *models.ExtractorContext, data *Media) (*models.Media, er
 			AudioCodec:   database.MediaCodecAac,
 			URL:          []string{data.VideoURL},
 			ThumbnailURL: []string{data.DisplayURL},
-			Width:        data.Dimensions.Width,
-			Height:       data.Dimensions.Height,
+			Width:        width,
+			Height:       height,
 		})
 	case "GraphImage", "XDTGraphImage":
+		if data.DisplayURL == "" {
+			return nil, fmt.Errorf("display_url missing for GraphImage/XDTGraphImage post")
+		}
 		item := media.NewItem()
 		item.AddFormats(&models.MediaFormat{
 			FormatID: "image",
@@ -94,11 +104,44 @@ func ParseGQLMedia(ctx *models.ExtractorContext, data *Media) (*models.Media, er
 			edges := data.EdgeSidecarToChildren.Edges
 
 			for i := range edges {
-				item := media.NewItem()
 				node := edges[i].Node
+				if node == nil {
+					return nil, fmt.Errorf("nil sidecar node at index %d", i)
+				}
 
+				item := media.NewItem()
+
+				// the main GQL endpoint tags every sidecar child with
+				// __typename ("GraphVideo"/"GraphImage" or the XDT-
+				// prefixed variants). the embed page's sidecar children
+				// carry no __typename at all - it uses is_video instead.
+				// fall back to that when typename is empty, instead of
+				// treating every embed-sourced carousel item as broken.
+				isVideo, isImage := false, false
 				switch node.Typename {
 				case "GraphVideo", "XDTGraphVideo":
+					isVideo = true
+				case "GraphImage", "XDTGraphImage":
+					isImage = true
+				case "":
+					if node.IsVideo {
+						isVideo = true
+					} else {
+						isImage = true
+					}
+				}
+
+				switch {
+				case isVideo:
+					if node.VideoURL == "" {
+						return nil, fmt.Errorf(
+							"video_url missing for sidecar item at index %d", i,
+						)
+					}
+					var width, height int32
+					if node.Dimensions != nil {
+						width, height = node.Dimensions.Width, node.Dimensions.Height
+					}
 					item.AddFormats(&models.MediaFormat{
 						FormatID:     "video",
 						Type:         database.MediaTypeVideo,
@@ -106,19 +149,37 @@ func ParseGQLMedia(ctx *models.ExtractorContext, data *Media) (*models.Media, er
 						AudioCodec:   database.MediaCodecAac,
 						URL:          []string{node.VideoURL},
 						ThumbnailURL: []string{node.DisplayURL},
-						Width:        node.Dimensions.Width,
-						Height:       node.Dimensions.Height,
+						Width:        width,
+						Height:       height,
 					})
 
-				case "GraphImage", "XDTGraphImage":
+				case isImage:
+					if node.DisplayURL == "" {
+						return nil, fmt.Errorf(
+							"display_url missing for sidecar item at index %d", i,
+						)
+					}
 					item.AddFormats(&models.MediaFormat{
 						FormatID: "image",
 						Type:     database.MediaTypePhoto,
 						URL:      []string{node.DisplayURL},
 					})
+
+				default:
+					// typename is set but isn't one of the known values:
+					// genuinely unrecognized/unhydrated child. fail loudly
+					// instead of silently returning a formatless item, so
+					// GetGQLMedia's caller falls back to the embed/igram
+					// extraction methods.
+					return nil, fmt.Errorf(
+						"unrecognized sidecar node type %q at index %d",
+						node.Typename, i,
+					)
 				}
 			}
 		}
+	default:
+		return nil, fmt.Errorf("unrecognized media type %q", data.Typename)
 	}
 
 	return media, nil
