@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
 	"github.com/PaulSonOfLars/gotgbot/v2/ext"
@@ -103,7 +104,10 @@ func SendFormats(
 		return nil, fmt.Errorf("no messages sent")
 	}
 
-	if extractorCtx.Chat.DeleteLinks && extractorCtx.Chat.Type == database.ChatTypeGroup && ctx.Message != nil {
+	if extractorCtx.Chat.DeleteLinks &&
+		extractorCtx.Chat.Type == database.ChatTypeGroup &&
+		ctx.Message != nil &&
+		strings.TrimSpace(ctx.EffectiveMessage.Text) == strings.TrimSpace(extractorCtx.ContentURL) {
 		go func(m *gotgbot.Message) {
 			m.Delete(bot, nil)
 		}(ctx.EffectiveMessage)
