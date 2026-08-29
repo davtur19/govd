@@ -28,8 +28,8 @@ var Extractor = &models.Extractor{
 	Redirect:   false,
 
 	GetFunc: func(ctx *models.ExtractorContext) (*models.ExtractorResponse, error) {
-		// method 1: get media from GQL web API
-		media, err1 := GetGQLMedia(ctx)
+		// method 1: current logged-out GraphQL API with browser TLS impersonation
+		media, err1 := GetModernGQLMedia(ctx)
 		if err1 == nil {
 			return &models.ExtractorResponse{
 				Media: media,
