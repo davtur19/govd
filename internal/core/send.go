@@ -103,7 +103,7 @@ func SendFormats(
 		return nil, fmt.Errorf("no messages sent")
 	}
 
-	if extractorCtx.Chat.DeleteLinks && ctx.Message != nil {
+	if extractorCtx.Chat.DeleteLinks && extractorCtx.Chat.Type == database.ChatTypeGroup && ctx.Message != nil {
 		go func(m *gotgbot.Message) {
 			m.Delete(bot, nil)
 		}(ctx.EffectiveMessage)
