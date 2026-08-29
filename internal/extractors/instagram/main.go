@@ -2,9 +2,11 @@ package instagram
 
 import (
 	"fmt"
+	"html"
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"regexp"
 
 	"github.com/bytedance/sonic"
@@ -40,14 +42,26 @@ var Extractor = &models.Extractor{
 				Media: media,
 			}, nil
 		}
-		// method 3: get media from 3rd party service (unlikely)
-		media, err3 := GetIGramPost(ctx)
+		// method 3: OGInstagram fallback
+		media, err3 := GetOGInstagramPost(ctx)
 		if err3 == nil {
 			return &models.ExtractorResponse{
 				Media: media,
 			}, nil
 		}
-		return nil, fmt.Errorf("all methods failed: %w; %w; %w", err1, err2, err3)
+
+		// method 4: iGram fallback
+		media, err4 := GetIGramPost(ctx)
+		if err4 == nil {
+			return &models.ExtractorResponse{
+				Media: media,
+			}, nil
+		}
+
+		return nil, fmt.Errorf(
+			"all methods failed: %w; %w; %w; %w",
+			err1, err2, err3, err4,
+		)
 	},
 }
 
@@ -124,6 +138,95 @@ func GetEmbedMedia(ctx *models.ExtractorContext) (*models.Media, error) {
 		return nil, fmt.Errorf("failed to parse embed page: %w", err)
 	}
 	return ParseGQLMedia(ctx, graphData)
+}
+
+func GetOGInstagramPost(ctx *models.ExtractorContext) (*models.Media, error) {
+	u, err := url.Parse(ctx.ContentURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse instagram URL: %w", err)
+	}
+
+	u.Scheme = "https"
+	u.Host = "oginstagram.com"
+	u.RawQuery = ""
+	u.Fragment = ""
+
+	resp, err := ctx.Fetch(
+		http.MethodGet,
+		u.String(),
+		&networking.RequestParams{
+			Headers: webHeaders,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch OGInstagram: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("OGInstagram returned %s", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read OGInstagram response: %w", err)
+	}
+
+	metaTagPattern := regexp.MustCompile(`(?is)<meta\b[^>]*>`)
+	propertyPattern := regexp.MustCompile(
+		`(?i)\b(?:property|name)\s*=\s*["'](og:video(?::url)?|og:image)["']`,
+	)
+	contentPattern := regexp.MustCompile(
+		`(?i)\bcontent\s*=\s*["']([^"']+)["']`,
+	)
+
+	var videoURL string
+	var thumbnailURL string
+
+	for _, tag := range metaTagPattern.FindAll(body, -1) {
+		prop := propertyPattern.FindSubmatch(tag)
+		content := contentPattern.FindSubmatch(tag)
+
+		if len(prop) < 2 || len(content) < 2 {
+			continue
+		}
+
+		value := html.UnescapeString(string(content[1]))
+
+		switch string(prop[1]) {
+		case "og:video", "og:video:url":
+			if videoURL == "" {
+				videoURL = value
+			}
+		case "og:image":
+			if thumbnailURL == "" {
+				thumbnailURL = value
+			}
+		}
+	}
+
+	if videoURL == "" {
+		return nil, fmt.Errorf("OGInstagram response contains no video URL")
+	}
+
+	media := ctx.NewMedia()
+	item := media.NewItem()
+
+	format := &models.MediaFormat{
+		FormatID:   "video",
+		Type:       database.MediaTypeVideo,
+		URL:        []string{videoURL},
+		VideoCodec: database.MediaCodecAvc,
+		AudioCodec: database.MediaCodecAac,
+	}
+
+	if thumbnailURL != "" {
+		format.ThumbnailURL = []string{thumbnailURL}
+	}
+
+	item.AddFormats(format)
+
+	return media, nil
 }
 
 func GetIGramPost(ctx *models.ExtractorContext) (*models.Media, error) {
